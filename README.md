@@ -6,6 +6,35 @@ A Metal Shading Language (MSL) port of [Mamba](https://arxiv.org/abs/2312.00752)
 
 Reference: [state-spaces/mamba](https://github.com/state-spaces/mamba) — `csrc/selective_scan/selective_scan_fwd_kernel.cuh`.
 
+## Demo
+
+`state-spaces/mamba-130m-hf` weights loaded straight into our MambaModel and generated through the Metal selective scan kernel (greedy, 40 new tokens, M4 Max):
+
+```
+> Mamba is a
+  very popular and popularly used game in the Philippines. It is a game that is
+  played by a group of people who are all very good at playing the game.
+
+> Once upon a time
+  there was a man named Billy. He was a man of great wealth, A man of great wealth,
+  A man of great wealth, A
+
+> The capital of Japan is
+  Tokyo, Japan. The city is located in the northern part of the country, and is
+  the capital of the Japanese state of Japan.
+```
+
+~35–42 tokens/sec greedy (re-running the full forward each step; SSM state caching for O(L) generation is future work).
+
+```python
+from transformers import AutoTokenizer
+from mamba_metal import load_mamba_hf, generate
+
+model, _ = load_mamba_hf("state-spaces/mamba-130m-hf")
+tokenizer = AutoTokenizer.from_pretrained("state-spaces/mamba-130m-hf")
+print(generate(model, tokenizer, "The capital of Japan is", max_new_tokens=40))
+```
+
 ## Status
 
 The forward path of selective scan is functionally complete and matches the PyTorch reference (within float-precision noise) for all feature flags Mamba uses at inference time:
@@ -93,7 +122,7 @@ experiments/                          # step-by-step verification scripts
 | 6 | D / softplus / z / fp16 | ✓ |
 | 7 | Throughput benchmark | ✓ |
 | 8 | Mamba block (in_proj → conv1d → SSM → out_proj) | ✓ |
-| 9 | HuggingFace checkpoint inference | TODO |
+| 9 | HuggingFace checkpoint inference (load → generate) | ✓ |
 
 ### Future work
 

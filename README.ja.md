@@ -6,6 +6,35 @@
 
 参照実装: [state-spaces/mamba](https://github.com/state-spaces/mamba) の `csrc/selective_scan/selective_scan_fwd_kernel.cuh`。
 
+## デモ
+
+`state-spaces/mamba-130m-hf` の重みをそのままロードして、自作 Metal カーネルを通じて生成（greedy、40 トークン、M4 Max）:
+
+```
+> Mamba is a
+  very popular and popularly used game in the Philippines. It is a game that is
+  played by a group of people who are all very good at playing the game.
+
+> Once upon a time
+  there was a man named Billy. He was a man of great wealth, A man of great wealth,
+  A man of great wealth, A
+
+> The capital of Japan is
+  Tokyo, Japan. The city is located in the northern part of the country, and is
+  the capital of the Japanese state of Japan.
+```
+
+35〜42 tokens/sec（毎ステップで全長の forward を走らせる O(L²) の素朴版。SSM 状態キャッシュ化で O(L) 化は今後の課題）。
+
+```python
+from transformers import AutoTokenizer
+from mamba_metal import load_mamba_hf, generate
+
+model, _ = load_mamba_hf("state-spaces/mamba-130m-hf")
+tokenizer = AutoTokenizer.from_pretrained("state-spaces/mamba-130m-hf")
+print(generate(model, tokenizer, "The capital of Japan is", max_new_tokens=40))
+```
+
 ## 進捗
 
 selective scan の forward パスは機能完備で、PyTorch 参照実装と数値一致（float 誤差範囲内）。Mamba の推論で必要な機能フラグは全て揃っています：
@@ -93,7 +122,7 @@ experiments/                          # 各段の検証スクリプト
 | 6 | D / softplus / z / fp16 | ✓ |
 | 7 | スループットベンチ | ✓ |
 | 8 | Mamba ブロック（in_proj → conv1d → SSM → out_proj） | ✓ |
-| 9 | HuggingFace checkpoint 推論 | TODO |
+| 9 | HuggingFace checkpoint 推論（ロード→生成） | ✓ |
 
 ### Future work
 
