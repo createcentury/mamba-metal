@@ -50,6 +50,19 @@
 
 これは Mamba 公式 CUDA の推論パスと同じ設計。
 
+### Apple 公式 mlx-lm との比較
+
+`mlx-lm` の [`models/mamba.py`](https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/models/mamba.py) は selective scan を Python の `for t in range(T)` ループで書いており、並列 prefix-scan カーネルを持たない。同ハードウェア（M4 Max）・同モデル（`mamba-130m-hf`）・同プロンプト、50 トークン生成：
+
+| プロンプト長 | **mamba-metal** | mlx-lm | **speedup** |
+|---:|---:|---:|---:|
+| 71 | **0.21 s** | 0.26 s | 1.22× |
+| 351 | **0.34 s** | 0.65 s | 1.90× |
+| 1,401 | **0.30 s** | 2.41 s | 8.14× |
+| **5,601** | **0.82 s** | **9.01 s** | **11.03×** |
+
+自作 Metal scan カーネルがプロンプトが長くなるほど効く。decode 単体は両者とも 1 ステップ elementwise なので同等。
+
 ### 各モデルサイズでの実測
 
 `state-spaces/mamba-*-hf` の 5 つ全てがロード・推論可能。プロンプト `"The capital of Japan is"`、40 トークン、greedy、M4 Max：

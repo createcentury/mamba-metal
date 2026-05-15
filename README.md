@@ -52,6 +52,19 @@ Prefill runs the entire prompt through one selective-scan kernel call. The kerne
 
 This is the same design as Mamba's official CUDA inference path.
 
+### Head-to-head vs Apple's mlx-lm
+
+`mlx-lm`'s [`models/mamba.py`](https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/models/mamba.py) implements selective scan as a Python `for t in range(T)` loop (no parallel prefix-scan kernel). Same hardware (M4 Max), same model (`mamba-130m-hf`), same prompt, 50 decode tokens:
+
+| prompt tokens | **mamba-metal** | mlx-lm | **speedup** |
+|---:|---:|---:|---:|
+| 71    | **0.21 s** | 0.26 s |  1.22× |
+| 351   | **0.34 s** | 0.65 s |  1.90× |
+| 1,401 | **0.30 s** | 2.41 s |  8.14× |
+| **5,601** | **0.82 s** | **9.01 s** | **11.03×** |
+
+The custom Metal scan kernel pays for itself dramatically as prompts grow; decode-only is comparable since both paths do one-step elementwise math.
+
 ### Across model sizes
 
 All five `state-spaces/mamba-*-hf` checkpoints load and generate end-to-end. Greedy from `"The capital of Japan is"`, 40 tokens, M4 Max:
