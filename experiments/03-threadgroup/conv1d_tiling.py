@@ -1,84 +1,30 @@
-"""Step 1C: threadgroup memory benefit via 1D convolution (stencil).
+"""Step 1C: threadgroup-memory tiling vs naive global-memory access.
 
-Workload: out[i] = sum over k in [0, K) of in[i + k]
-
-Without threadgroup memory: each in[j] is loaded K times from global memory.
-With threadgroup memory: each tile is loaded once, then reused K times from SRAM.
-
-Expected: K-fold reduction in global memory traffic → higher GB/s seen at the
-out array level when K is large.
-
-This is the same reuse pattern as Mamba's selective scan: for each state_idx
-(0..N-1), the kernel re-reads delta_u_vals etc. from the chunk. Using
-threadgroup memory means those reads hit SRAM, not DRAM.
+Uses parametric kernels conv1d_global.metal and conv1d_tg.metal with K
+substituted at load time.
 """
 
 import time
-from dataclasses import dataclass
 
 import mlx.core as mx
 
-
-# Both kernels parameterize K via a constant we substitute into the source.
-# (Function constants would be cleaner, but template-style substitution is
-# sufficient for this experiment.)
+from mamba_metal import load_kernel
 
 
-def make_global_kernel(K: int):
-    src = f"""
-        uint i = thread_position_in_grid.x;
-        if (i >= n_out) return;
-        float acc = 0.0;
-        for (uint k = 0; k < {K}u; ++k) {{
-            acc += in_[i + k];
-        }}
-        out[i] = acc;
-    """
-    return mx.fast.metal_kernel(
-        name=f"conv1d_global_K{K}",
+def make_kernels(K: int):
+    kg = load_kernel(
+        name="conv1d_global",
         input_names=["in_", "n_out"],
         output_names=["out"],
-        source=src,
+        params={"K": K},
     )
-
-
-def make_tg_kernel(K: int, tg_size: int = 256):
-    tile_size = tg_size + K - 1
-    src = f"""
-        uint local_i = thread_position_in_threadgroup.x;
-        uint tg_id = threadgroup_position_in_grid.x;
-        uint base = tg_id * {tg_size}u;
-        uint i = base + local_i;
-
-        threadgroup float tile[{tile_size}];
-
-        // Each thread loads one element of the main tile.
-        if (base + local_i < n_in) {{
-            tile[local_i] = in_[base + local_i];
-        }} else {{
-            tile[local_i] = 0.0;
-        }}
-        // The first K-1 threads also load the halo at the end.
-        if (local_i < {K - 1}u) {{
-            uint halo_idx = base + {tg_size}u + local_i;
-            tile[{tg_size}u + local_i] = (halo_idx < n_in) ? in_[halo_idx] : 0.0;
-        }}
-
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-
-        if (i >= n_out) return;
-        float acc = 0.0;
-        for (uint k = 0; k < {K}u; ++k) {{
-            acc += tile[local_i + k];
-        }}
-        out[i] = acc;
-    """
-    return mx.fast.metal_kernel(
-        name=f"conv1d_tg_K{K}",
+    kt = load_kernel(
+        name="conv1d_tg",
         input_names=["in_", "n_in", "n_out"],
         output_names=["out"],
-        source=src,
+        params={"K": K, "K_minus_1": K - 1, "tile_size": 256 + K - 1},
     )
+    return kg, kt
 
 
 def run_global(kernel, a: mx.array, K: int) -> mx.array:
@@ -115,22 +61,12 @@ def time_call(fn, iters: int, warmup: int = 3) -> float:
         out = fn()
         mx.eval(out)
     mx.synchronize()
-
     t0 = time.perf_counter()
     for _ in range(iters):
         out = fn()
         mx.eval(out)
     mx.synchronize()
     return (time.perf_counter() - t0) / iters
-
-
-@dataclass
-class Row:
-    K: int
-    label: str
-    time_ms: float
-    out_gbs: float  # output-volume bandwidth (real work) — useful comparison
-    in_gbs_naive: float  # what global-read traffic implies
 
 
 def main() -> None:
@@ -141,18 +77,13 @@ def main() -> None:
     mx.eval(a)
     mx.synchronize()
 
-    print(f"input size: {size_mb} MB ({n} elements)")
-    print()
+    print(f"input size: {size_mb} MB ({n} elements)\n")
     print(f"{'K':>4} {'kernel':>8} {'time (ms)':>11} {'effective GB/s':>17} {'speedup':>10}")
     print("-" * 56)
 
     for K in [1, 4, 16, 64]:
-        kg = make_global_kernel(K)
-        kt = make_tg_kernel(K)
-
+        kg, kt = make_kernels(K)
         n_out = n - K + 1
-        # Effective bandwidth: bytes the algorithm logically touches per call.
-        # For conv1d: read n_in + write n_out ≈ 2n bytes_per_float
         logical_bytes = (n + n_out) * bytes_per_float
 
         t_global = time_call(lambda: run_global(kg, a, K), iters=20)
@@ -165,16 +96,13 @@ def main() -> None:
         print(f"{K:>4} {'global':>8} {t_global*1e3:>9.3f}   {gbs_global:>15.1f}   {'-':>8}")
         print(f"{K:>4} {'tg':>8} {t_tg*1e3:>9.3f}   {gbs_tg:>15.1f}   {speedup:>8.2f}x")
 
-    # Sanity check: outputs should match
+    # Sanity: outputs match
     print()
-    print("Sanity check (K=16):")
-    kg = make_global_kernel(16)
-    kt = make_tg_kernel(16)
-    og = run_global(kg, a, 16)
-    ot = run_tg(kt, a, 16)
+    kg, kt = make_kernels(16)
+    og, ot = run_global(kg, a, 16), run_tg(kt, a, 16)
     mx.eval(og, ot)
     max_diff = mx.max(mx.abs(og - ot)).item()
-    print(f"  max abs diff = {max_diff:.3e}")
+    print(f"sanity (K=16): max abs diff between global and tg = {max_diff:.3e}")
 
 
 if __name__ == "__main__":

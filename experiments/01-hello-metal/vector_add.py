@@ -1,27 +1,24 @@
-"""Step 1A: vector add via mx.fast.metal_kernel — toolchain smoke test."""
+"""Step 1A: vector add — toolchain smoke test.
+
+Uses ``mamba_metal.kernels.vector_add.metal`` (loaded at import time).
+"""
 
 import mlx.core as mx
 
-
-vector_add_source = """
-    uint i = thread_position_in_grid.x;
-    if (i >= n) return;
-    out[i] = a[i] + b[i];
-"""
+from mamba_metal import load_kernel
 
 
-kernel = mx.fast.metal_kernel(
+_kernel = load_kernel(
     name="vector_add",
     input_names=["a", "b", "n"],
     output_names=["out"],
-    source=vector_add_source,
 )
 
 
 def vector_add(a: mx.array, b: mx.array) -> mx.array:
     assert a.shape == b.shape and a.dtype == b.dtype
     n = a.size
-    (out,) = kernel(
+    (out,) = _kernel(
         inputs=[a, b, mx.array(n, dtype=mx.uint32)],
         output_shapes=[a.shape],
         output_dtypes=[a.dtype],
@@ -43,7 +40,7 @@ def main() -> None:
     max_err = mx.max(mx.abs(out - ref)).item()
     print(f"n = {n}")
     print(f"max abs error = {max_err:.3e}")
-    assert max_err < 1e-6, "vector_add diverged from a + b"
+    assert max_err < 1e-6
     print("OK")
 
 
