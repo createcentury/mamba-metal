@@ -49,6 +49,10 @@ class MambaResidualBlock(nn.Module):
     def __call__(self, x: mx.array) -> mx.array:
         return x + self.mixer(self.norm(x))
 
+    def prefill(self, x):
+        y, conv_state, ssm_state = self.mixer.prefill(self.norm(x))
+        return x + y, conv_state, ssm_state
+
     def step(self, x_token, conv_state, ssm_state):
         y, new_conv, new_ssm = self.mixer.step(self.norm(x_token), conv_state, ssm_state)
         return x_token + y, new_conv, new_ssm
@@ -85,6 +89,25 @@ class MambaModel(nn.Module):
             for _ in self.layers
         ]
         return conv_states, ssm_states
+
+    def prefill(
+        self, input_ids: mx.array
+    ) -> tuple[mx.array, list[mx.array], list[mx.array]]:
+        """Process a (B, L) prompt in parallel.
+
+        Returns (logits: (B, L, vocab), conv_states, ssm_states).
+        Use ``logits[:, -1, :]`` as the next-token distribution and the
+        returned state lists to continue with ``step`` for O(1)/tok decode.
+        """
+        x = self.embeddings(input_ids)
+        conv_states, ssm_states = [], []
+        for layer in self.layers:
+            x, cs, ss = layer.prefill(x)
+            conv_states.append(cs)
+            ssm_states.append(ss)
+        x = self.norm_f(x)
+        logits = x @ self.embeddings.weight.T
+        return logits, conv_states, ssm_states
 
     def step(
         self,

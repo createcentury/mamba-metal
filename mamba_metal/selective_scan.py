@@ -16,7 +16,7 @@ _kernel = load_kernel(
         "batch", "dim", "dstate", "seqlen",
         "apply_softplus", "use_D", "use_z",
     ],
-    output_names=["y"],
+    output_names=["y", "ssm_state_out"],
 )
 
 
@@ -30,7 +30,8 @@ def selective_scan(
     D: mx.array | None = None,
     z: mx.array | None = None,
     delta_softplus: bool = False,
-) -> mx.array:
+    return_state: bool = False,
+) -> mx.array | tuple[mx.array, mx.array]:
     """Mamba selective scan with optional D / z / softplus.
 
     Shapes:
@@ -58,7 +59,7 @@ def selective_scan(
     if z is None:
         z = mx.zeros((1,), dtype=u.dtype)  # tiny dummy; kernel guarded by use_z
 
-    (y,) = _kernel(
+    y, ssm_state_out = _kernel(
         inputs=[
             u, delta, A, B, C, D, z,
             mx.array(batch, dtype=mx.uint32),
@@ -69,9 +70,11 @@ def selective_scan(
             mx.array(1 if use_D else 0, dtype=mx.uint32),
             mx.array(1 if use_z else 0, dtype=mx.uint32),
         ],
-        output_shapes=[u.shape],
-        output_dtypes=[u.dtype],
+        output_shapes=[u.shape, (batch, dim, dstate)],
+        output_dtypes=[u.dtype, mx.float32],
         grid=(TG_SIZE, batch, dim),
         threadgroup=(TG_SIZE, 1, 1),
     )
+    if return_state:
+        return y, ssm_state_out
     return y

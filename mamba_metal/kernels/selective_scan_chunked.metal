@@ -17,8 +17,12 @@
 //   device const float* z                     (batch, dim, seqlen) [zeros if unused]
 //   device const uint&  batch, dim, dstate, seqlen
 //   device const uint&  apply_softplus, use_D, use_z
-// Output:
+// Outputs:
 //   device float* y                           (batch, dim, seqlen)
+//   device float* ssm_state_out               (batch, dim, dstate)
+//      — h^{(s)} at position seqlen-1 per (batch, dim, state).
+//      Used as initial state for incremental decode after prefill.
+//      Mirrors Mamba CUDA's params.x_ptr output.
 // Dispatch: grid = (1024, batch, dim), threadgroup = (1024, 1, 1)
 
 uint t = thread_position_in_threadgroup.x;
@@ -142,4 +146,10 @@ for (uint c = 0; c < n_chunks; ++c) {
     if (in_range) {
         y[batch_id * dim * seqlen + dim_id * seqlen + global_t] = y_t;
     }
+}
+
+// After all chunks: carry_b[s] holds h^{(s)} at the last position. Write it out.
+threadgroup_barrier(mem_flags::mem_threadgroup);
+if (t < dstate) {
+    ssm_state_out[(batch_id * dim + dim_id) * dstate + t] = carry_b[t];
 }

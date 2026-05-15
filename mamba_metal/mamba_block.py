@@ -101,6 +101,57 @@ class MambaBlock(nn.Module):
 
         return self.out_proj(y)
 
+    def prefill(self, x: mx.array) -> tuple[mx.array, mx.array, mx.array]:
+        """Process a prompt of length L in parallel and return the per-state
+        caches needed for incremental decode.
+
+        Returns (y, conv_state, ssm_state) where
+          y          : (B, L, d_model) — block output
+          conv_state : (B, d_inner, d_conv) — last d_conv pre-conv values
+          ssm_state  : (B, d_inner, d_state) — h^{(s)} at position L-1
+        """
+        B, L, _ = x.shape
+
+        xz = self.in_proj(x)
+        x_pre_conv, z = mx.split(xz, 2, axis=-1)              # each (B, L, d_inner)
+
+        # Conv-state buffer = the d_conv pre-conv values ending at position L-1.
+        # Left-pad with zeros when L < d_conv (causal conv convention).
+        if L >= self.d_conv:
+            conv_state = x_pre_conv[:, L - self.d_conv : L, :]
+        else:
+            pad = mx.zeros(
+                (B, self.d_conv - L, self.d_inner), dtype=x_pre_conv.dtype
+            )
+            conv_state = mx.concatenate([pad, x_pre_conv], axis=1)
+        conv_state = mx.transpose(conv_state, (0, 2, 1))      # (B, d_inner, d_conv)
+
+        x_main = self.conv1d(x_pre_conv)[:, :L, :]
+        x_main = nn.silu(x_main)
+
+        x_dbl = self.x_proj(x_main)
+        dt = x_dbl[..., : self.dt_rank]
+        B_ssm = x_dbl[..., self.dt_rank : self.dt_rank + self.d_state]
+        C_ssm = x_dbl[..., self.dt_rank + self.d_state :]
+        dt = self.dt_proj(dt)
+
+        A = -mx.exp(self.A_log)
+
+        y, ssm_state = selective_scan(
+            u=mx.transpose(x_main, (0, 2, 1)),
+            delta=mx.transpose(dt, (0, 2, 1)),
+            A=A,
+            B=mx.transpose(B_ssm, (0, 2, 1)),
+            C=mx.transpose(C_ssm, (0, 2, 1)),
+            D=self.D,
+            z=mx.transpose(z, (0, 2, 1)),
+            delta_softplus=True,
+            return_state=True,
+        )
+        y = mx.transpose(y, (0, 2, 1))                        # (B, L, d_inner)
+        y = self.out_proj(y)
+        return y, conv_state, ssm_state
+
     def step(
         self,
         x_token: mx.array,        # (B, 1, d_model)

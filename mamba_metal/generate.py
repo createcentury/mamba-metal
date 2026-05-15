@@ -70,29 +70,23 @@ def generate_fast(
     temperature: float = 0.0,
     on_token: Callable[[str], None] | None = None,
 ) -> str:
-    """O(L) autoregressive generation using SSM + conv state caching.
+    """O(L_prompt + n_decode) autoregressive generation.
 
-    Prefill walks the prompt one token at a time to build up the state, then
-    each generated token costs O(1) — no quadratic re-forward.
+    Prefill is one parallel-scan call over the whole prompt (Mamba-style — the
+    kernel writes the final SSM state, and we slice the last d_conv pre-conv
+    values for the conv state). Decode then runs at O(1)/token using model.step.
     """
-    input_ids = tokenizer(prompt, return_tensors="np").input_ids[0].tolist()
+    input_ids = mx.array(tokenizer(prompt, return_tensors="np").input_ids)
     eos = tokenizer.eos_token_id
 
-    conv_states, ssm_states = model.init_state(batch_size=1)
-
-    # Prefill: feed each prompt token into the state. The logits after the last
-    # one are the distribution for the first generated token.
-    logits = None
-    for tok in input_ids:
-        ids = mx.array([[tok]])
-        logits, conv_states, ssm_states = model.step(ids, conv_states, ssm_states)
-    mx.eval(logits)
+    logits, conv_states, ssm_states = model.prefill(input_ids)
+    next_logits = logits[:, -1, :]
+    mx.eval(next_logits)
 
     generated_ids: list[int] = []
     prev_text = prompt
 
     for _ in range(max_new_tokens):
-        next_logits = logits[:, 0, :]
         if temperature == 0.0:
             next_id = mx.argmax(next_logits, axis=-1)
         else:
@@ -110,6 +104,7 @@ def generate_fast(
                 prev_text = prompt + new_text
 
         ids = mx.array([[next_id_int]])
-        logits, conv_states, ssm_states = model.step(ids, conv_states, ssm_states)
+        step_logits, conv_states, ssm_states = model.step(ids, conv_states, ssm_states)
+        next_logits = step_logits[:, 0, :]
 
     return prompt + tokenizer.decode(generated_ids, skip_special_tokens=True)
