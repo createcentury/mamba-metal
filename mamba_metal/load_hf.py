@@ -21,15 +21,21 @@ from mamba_metal.mamba_model import MambaConfig, MambaModel
 
 def _config_from_hf(local_dir: Path) -> MambaConfig:
     cfg = json.loads((local_dir / "config.json").read_text())
+    # Prefer HF transformers fields; fall back to legacy state-spaces aliases.
+    # Some checkpoints (e.g. mamba-790m-hf) have a stale `d_model` field that
+    # disagrees with the real model dim; `hidden_size` is the trustworthy one.
+    d_model = cfg.get("hidden_size") or cfg["d_model"]
+    d_inner = cfg.get("intermediate_size") or cfg.get("d_inner")
+    expand = d_inner // d_model if d_inner else cfg.get("expand", 2)
     return MambaConfig(
-        d_model=cfg["d_model"],
-        n_layer=cfg["n_layer"],
+        d_model=d_model,
+        n_layer=cfg.get("num_hidden_layers") or cfg["n_layer"],
         vocab_size=cfg["vocab_size"],
-        d_state=cfg["state_size"],
-        d_conv=cfg["conv_kernel"],
-        expand=cfg["expand"],
-        dt_rank=cfg["time_step_rank"],
-        rms_norm_eps=cfg["layer_norm_epsilon"],
+        d_state=cfg.get("state_size") or cfg.get("d_state", 16),
+        d_conv=cfg.get("conv_kernel") or cfg.get("d_conv", 4),
+        expand=expand,
+        dt_rank=cfg.get("time_step_rank") or cfg.get("dt_rank"),
+        rms_norm_eps=cfg.get("layer_norm_epsilon", 1e-5),
     )
 
 
