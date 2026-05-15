@@ -37,6 +37,18 @@
 
 `generate_fast` は M4 Max で 130m モデルにおいて **~7 ms/token (≈ 145 tok/s) で一定**。生成が長くなるほど O(L²) 版との差が広がる。
 
+### 各モデルサイズでの実測
+
+`state-spaces/mamba-*-hf` の 5 つ全てがロード・推論可能。プロンプト `"The capital of Japan is"`、40 トークン、greedy、M4 Max：
+
+| model | params | load (s) | tok/s | ms/tok |
+|---|---:|---:|---:|---:|
+| 130m | 129 M | 1.3 | 175 | 5.7 |
+| 370m | 372 M | 3.4 | 82 | 12.2 |
+| 790m | 702 M | 4.8 | 42 | 23.7 |
+| 1.4b | 1372 M | 11.6 | 30 | 33.2 |
+| **2.8b** | **2.7 B** | **19.6** | **12** | **80.6** |
+
 ```python
 from transformers import AutoTokenizer
 from mamba_metal import load_mamba_hf, generate_fast

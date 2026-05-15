@@ -39,6 +39,18 @@ has already been generated. Greedy output is identical to the O(L²) path.
 
 `generate_fast` runs at a flat **~7 ms/token** (≈ 145 tok/s) at 130m on M4 Max; the speedup widens with longer outputs.
 
+### Across model sizes
+
+All five `state-spaces/mamba-*-hf` checkpoints load and generate end-to-end. Greedy from `"The capital of Japan is"`, 40 tokens, M4 Max:
+
+| model     | params | load (s) | tok/s | ms/tok |
+|-----------|-------:|---------:|------:|-------:|
+| 130m      |  129 M |     1.3  | 175   |   5.7  |
+| 370m      |  372 M |     3.4  |  82   |  12.2  |
+| 790m      |  702 M |     4.8  |  42   |  23.7  |
+| 1.4b      | 1372 M |    11.6  |  30   |  33.2  |
+| **2.8b**  | **2.7 B** | **19.6** | **12** | **80.6** |
+
 ```python
 from transformers import AutoTokenizer
 from mamba_metal import load_mamba_hf, generate_fast
