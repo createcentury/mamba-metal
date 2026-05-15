@@ -1,0 +1,15 @@
+[project]
+name = "mamba-metal"
+version = "0.1.0"
+description = "Mamba selective scan in Metal Shading Language for Apple Silicon"
+requires-python = ">=3.12"
+dependencies = [
+    "mlx>=0.20.0",
+    "numpy>=2.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ipython>=8.0",
+]
