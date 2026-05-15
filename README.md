@@ -179,6 +179,7 @@ experiments/                          # step-by-step verification scripts
 
 ### Future work
 
+- **Swift / iOS port**: [createcentury/mamba-metal-swift](https://github.com/createcentury/mamba-metal-swift) — the same `.metal` kernels exposed through `MLXFast.metalKernel` (mlx-swift). `pair_scan` verified end-to-end, model layer port in progress.
 - **On-device benchmark: Transformer vs Mamba on iPhone** — port both architectures to iOS (Metal or CoreML), measure speed and accuracy on equal-budget models. The selective-scan Metal kernel in this repo is the building block.
 
 Findings from each step are written up at [createcentury.github.io/blog](https://createcentury.github.io/blog).

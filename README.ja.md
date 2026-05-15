@@ -177,6 +177,7 @@ experiments/                          # 各段の検証スクリプト
 
 ### Future work
 
+- **Swift / iOS 移植**: [createcentury/mamba-metal-swift](https://github.com/createcentury/mamba-metal-swift) — 同じ `.metal` カーネルを `MLXFast.metalKernel` (mlx-swift) 経由で公開。`pair_scan` は end-to-end 検証済み、モデル層は移植進行中。
 - **iPhone 上での Transformer vs Mamba ベンチ** — 両アーキテクチャを iOS（Metal もしくは CoreML）に載せ、同等パラメータ規模で**速度と精度**を比較する。本リポジトリの selective scan Metal カーネルが Mamba 側の土台になる。
 
 各段の知見は [createcentury.github.io/blog](https://createcentury.github.io/blog) に記事化しています。
