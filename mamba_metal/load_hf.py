@@ -50,7 +50,7 @@ def load_mamba_hf(
     local_dir = Path(
         snapshot_download(
             repo_id=repo_id,
-            allow_patterns=["*.json", "*.safetensors"],
+            allow_patterns=["*.json", "*.safetensors", "tokenizer*", "special_tokens*"],
         )
     )
 
