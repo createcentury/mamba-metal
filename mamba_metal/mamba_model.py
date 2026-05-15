@@ -49,6 +49,10 @@ class MambaResidualBlock(nn.Module):
     def __call__(self, x: mx.array) -> mx.array:
         return x + self.mixer(self.norm(x))
 
+    def step(self, x_token, conv_state, ssm_state):
+        y, new_conv, new_ssm = self.mixer.step(self.norm(x_token), conv_state, ssm_state)
+        return x_token + y, new_conv, new_ssm
+
 
 class MambaModel(nn.Module):
     """Stack of MambaResidualBlocks with tied LM head."""
@@ -68,3 +72,33 @@ class MambaModel(nn.Module):
         x = self.norm_f(x)
         # Tied LM head: logits = x @ embeddings.weight.T
         return x @ self.embeddings.weight.T
+
+    def init_state(self, batch_size: int = 1) -> tuple[list[mx.array], list[mx.array]]:
+        """Zero-initialised conv & SSM state for incremental decoding."""
+        d_inner = self.cfg.expand * self.cfg.d_model
+        conv_states = [
+            mx.zeros((batch_size, d_inner, self.cfg.d_conv), dtype=mx.float32)
+            for _ in self.layers
+        ]
+        ssm_states = [
+            mx.zeros((batch_size, d_inner, self.cfg.d_state), dtype=mx.float32)
+            for _ in self.layers
+        ]
+        return conv_states, ssm_states
+
+    def step(
+        self,
+        input_ids: mx.array,            # (B, 1) of int
+        conv_states: list[mx.array],
+        ssm_states: list[mx.array],
+    ) -> tuple[mx.array, list[mx.array], list[mx.array]]:
+        """Process a single new token, carrying state across calls. O(1) per step."""
+        x = self.embeddings(input_ids)
+        new_conv, new_ssm = [], []
+        for layer, cs, ss in zip(self.layers, conv_states, ssm_states):
+            x, cs_new, ss_new = layer.step(x, cs, ss)
+            new_conv.append(cs_new)
+            new_ssm.append(ss_new)
+        x = self.norm_f(x)
+        logits = x @ self.embeddings.weight.T
+        return logits, new_conv, new_ssm

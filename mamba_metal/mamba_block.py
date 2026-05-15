@@ -100,3 +100,48 @@ class MambaBlock(nn.Module):
         y = mx.transpose(y, (0, 2, 1))                        # back to (B, L, d_inner)
 
         return self.out_proj(y)
+
+    def step(
+        self,
+        x_token: mx.array,        # (B, 1, d_model)
+        conv_state: mx.array,     # (B, d_inner, d_conv)
+        ssm_state: mx.array,      # (B, d_inner, d_state)
+    ) -> tuple[mx.array, mx.array, mx.array]:
+        """O(1) per-token forward — updates carried state in place of running the scan.
+
+        Returns (y, new_conv_state, new_ssm_state).
+        """
+        xz = self.in_proj(x_token)                            # (B, 1, 2*d_inner)
+        x_main, z = mx.split(xz, 2, axis=-1)
+        x_main = x_main[:, 0, :]                              # (B, d_inner)
+        z = z[:, 0, :]                                        # (B, d_inner)
+
+        # Causal conv via sliding window: shift left, append new value.
+        new_conv = mx.concatenate(
+            [conv_state[:, :, 1:], x_main[:, :, None]], axis=2
+        )                                                     # (B, d_inner, d_conv)
+        # conv1d.weight shape is (d_inner, d_conv, 1) after our HF transpose.
+        w = self.conv1d.weight.squeeze(-1)                    # (d_inner, d_conv)
+        x_conv = (new_conv * w[None, :, :]).sum(axis=-1) + self.conv1d.bias
+        x_conv = nn.silu(x_conv)                              # (B, d_inner)
+
+        x_dbl = self.x_proj(x_conv)                           # (B, dt_rank + 2*d_state)
+        dt_pre = x_dbl[:, : self.dt_rank]
+        B_ssm = x_dbl[:, self.dt_rank : self.dt_rank + self.d_state]
+        C_ssm = x_dbl[:, self.dt_rank + self.d_state :]
+        dt = self.dt_proj(dt_pre)                             # (B, d_inner)
+        dt = nn.softplus(dt)                                  # match selective_scan's softplus
+
+        A = -mx.exp(self.A_log)                               # (d_inner, d_state)
+
+        # SSM step: h_new = exp(dt*A) * h_prev + dt*x*B
+        a = mx.exp(dt[:, :, None] * A[None, :, :])            # (B, d_inner, d_state)
+        b = (dt * x_conv)[:, :, None] * B_ssm[:, None, :]     # (B, d_inner, d_state)
+        new_ssm = a * ssm_state + b
+
+        y = (new_ssm * C_ssm[:, None, :]).sum(axis=-1)        # (B, d_inner)
+        y = y + self.D * x_conv                               # D skip
+        y = y * nn.silu(z)                                    # z gate
+
+        y = self.out_proj(y)[:, None, :]                      # (B, 1, d_model)
+        return y, new_conv, new_ssm
