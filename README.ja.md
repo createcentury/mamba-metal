@@ -37,6 +37,19 @@
 
 `generate_fast` は M4 Max で 130m モデルにおいて **~7 ms/token (≈ 145 tok/s) で一定**。生成が長くなるほど O(L²) 版との差が広がる。
 
+### 長文脈プロンプト（並列 prefill）
+
+プロンプト全体を 1 回の selective scan カーネル呼び出しで処理。カーネル末尾で最終 SSM 状態を出力（Mamba CUDA の `params.x_ptr` 相当）し、decode はその状態から O(1)/token で続行する。`prefill + 50 トークン生成`の壁時計時間（mamba-130m）：
+
+| プロンプト長 | 旧 step-loop prefill | **並列 prefill** | speedup |
+|---:|---:|---:|---:|
+| 71 | 0.44 s | **0.22 s** | 2.0× |
+| 351 | 1.44 s | **0.34 s** | 4.2× |
+| 1,401 | 5.20 s | **0.45 s** | 11.6× |
+| **5,601** | **21.80 s** | **0.88 s** | **24.8×** |
+
+これは Mamba 公式 CUDA の推論パスと同じ設計。
+
 ### 各モデルサイズでの実測
 
 `state-spaces/mamba-*-hf` の 5 つ全てがロード・推論可能。プロンプト `"The capital of Japan is"`、40 トークン、greedy、M4 Max：
@@ -70,6 +83,8 @@ selective scan の forward パスは機能完備で、PyTorch 参照実装と数
 | `delta_softplus` | ✓ | ✓ |
 | z ゲート（SiLU） | ✓ | ✓ |
 | fp16 入力 / fp32 蓄積 | ✓ | ✓ |
+| 推論用の最終 SSM 状態出力 | ✓ | ✓ |
+| 並列 prefill + O(L) インクリメンタル decode | ✓ | ✓ |
 | 複素数重み | ✓ | — |
 | `kNRows > 1` | △ | — |
 | 後方パス（学習用） | ✓ | — |

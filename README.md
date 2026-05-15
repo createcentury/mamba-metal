@@ -39,6 +39,19 @@ has already been generated. Greedy output is identical to the O(L²) path.
 
 `generate_fast` runs at a flat **~7 ms/token** (≈ 145 tok/s) at 130m on M4 Max; the speedup widens with longer outputs.
 
+### Long-context prompts (parallel prefill)
+
+Prefill runs the entire prompt through one selective-scan kernel call. The kernel writes the final SSM state to a buffer (mirrors Mamba CUDA's `params.x_ptr`); decode picks up from that state at O(1)/token. Wall time for `prefill + 50 decoded tokens` on mamba-130m:
+
+| prompt tokens | step-loop prefill | **parallel prefill** | speedup |
+|---:|---:|---:|---:|
+| 71    | 0.44 s | **0.22 s** |  2.0× |
+| 351   | 1.44 s | **0.34 s** |  4.2× |
+| 1,401 | 5.20 s | **0.45 s** | 11.6× |
+| **5,601** | **21.80 s** | **0.88 s** | **24.8×** |
+
+This is the same design as Mamba's official CUDA inference path.
+
 ### Across model sizes
 
 All five `state-spaces/mamba-*-hf` checkpoints load and generate end-to-end. Greedy from `"The capital of Japan is"`, 40 tokens, M4 Max:
@@ -72,6 +85,8 @@ The forward path of selective scan is functionally complete and matches the PyTo
 | `delta_softplus` | ✓ | ✓ |
 | z gate (SiLU) | ✓ | ✓ |
 | fp16 inputs / fp32 scan accumulation | ✓ | ✓ |
+| Final SSM state output for inference cache | ✓ | ✓ |
+| Parallel prefill + O(L) incremental decode | ✓ | ✓ |
 | Complex weights | ✓ | — |
 | `kNRows > 1` | △ | — |
 | Backward pass | ✓ | — |
