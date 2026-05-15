@@ -92,8 +92,12 @@ experiments/                          # step-by-step verification scripts
 | 5 | Chunking + per-state running prefix | ✓ |
 | 6 | D / softplus / z / fp16 | ✓ |
 | 7 | Throughput benchmark | ✓ |
-| 8 | Mamba block (in_proj → conv1d → SSM → out_proj) | TODO |
+| 8 | Mamba block (in_proj → conv1d → SSM → out_proj) | ✓ |
 | 9 | HuggingFace checkpoint inference | TODO |
+
+### Future work
+
+- **On-device benchmark: Transformer vs Mamba on iPhone** — port both architectures to iOS (Metal or CoreML), measure speed and accuracy on equal-budget models. The selective-scan Metal kernel in this repo is the building block.
 
 Findings from each step are written up at [createcentury.github.io/blog](https://createcentury.github.io/blog).
 

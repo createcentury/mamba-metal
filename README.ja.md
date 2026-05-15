@@ -92,8 +92,12 @@ experiments/                          # 各段の検証スクリプト
 | 5 | チャンク化 + per-state running prefix | ✓ |
 | 6 | D / softplus / z / fp16 | ✓ |
 | 7 | スループットベンチ | ✓ |
-| 8 | Mamba ブロック（in_proj → conv1d → SSM → out_proj） | TODO |
+| 8 | Mamba ブロック（in_proj → conv1d → SSM → out_proj） | ✓ |
 | 9 | HuggingFace checkpoint 推論 | TODO |
+
+### Future work
+
+- **iPhone 上での Transformer vs Mamba ベンチ** — 両アーキテクチャを iOS（Metal もしくは CoreML）に載せ、同等パラメータ規模で**速度と精度**を比較する。本リポジトリの selective scan Metal カーネルが Mamba 側の土台になる。
 
 各段の知見は [createcentury.github.io/blog](https://createcentury.github.io/blog) に記事化しています。
 
