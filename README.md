@@ -1,23 +1,37 @@
 # mamba-metal
 
-Mamba の selective scan を **Metal Shading Language (MSL)** で書き直し、Apple Silicon 上で動かすプロジェクト。
+**Language**: [English](README.md) | [日本語](README.ja.md)
 
-参照実装: [state-spaces/mamba](https://github.com/state-spaces/mamba) の `csrc/selective_scan/selective_scan_fwd_kernel.cuh`
+A Metal Shading Language (MSL) port of [Mamba](https://arxiv.org/abs/2312.00752)'s selective scan, running on Apple Silicon.
 
-## 開発環境
+Reference: [state-spaces/mamba](https://github.com/state-spaces/mamba) — `csrc/selective_scan/selective_scan_fwd_kernel.cuh`.
 
-- Apple M4 / Metal
-- Python 3.12 (uv 管理)
-- MLX（カスタム Metal カーネルのホストとして）
+## Status
 
-## 使い方
+The forward path of selective scan is functionally complete and matches the PyTorch reference (within float-precision noise) for all feature flags Mamba uses at inference time:
+
+| Feature | Mamba CUDA | mamba-metal |
+|---|---|---|
+| Selective scan with variable B, C | ✓ | ✓ |
+| Arbitrary `seqlen` (chunked, in-SRAM running prefix) | ✓ | ✓ |
+| D skip connection | ✓ | ✓ |
+| `delta_softplus` | ✓ | ✓ |
+| z gate (SiLU) | ✓ | ✓ |
+| fp16 inputs / fp32 scan accumulation | ✓ | ✓ |
+| Complex weights | ✓ | — |
+| `kNRows > 1` | △ | — |
+| Backward pass | ✓ | — |
+
+Single-kernel throughput on M4 Max (B=1, D=16, N=16): peak **~45 M tokens/s, ~190 GFLOPS** at `seqlen=32k`. Time-per-token is roughly flat above `seqlen ~ 4k` (close to the linear-time property Mamba advertises).
+
+## Quickstart
 
 ```bash
 uv sync
 .venv/bin/python experiments/07-chunked/selective_scan_chunked.py
 ```
 
-または Python から：
+From Python:
 
 ```python
 import mlx.core as mx
@@ -26,58 +40,75 @@ from mamba_metal import selective_scan
 # u, delta: (batch, dim, seqlen)
 # A:        (dim, dstate)
 # B, C:     (batch, dstate, seqlen)
-y = selective_scan(u, delta, A, B, C)
+y = selective_scan(u, delta, A, B, C,
+                   D=D, z=z, delta_softplus=True)
 ```
 
-## ディレクトリ構造
+Inputs can be fp16 (Mamba style — data in half, weights in float).
+
+## Layout
 
 ```
 mamba_metal/
-├── kernels/                          # MSL カーネル本体（全て .metal）
-│   ├── selective_scan_chunked.metal  # 任意 seqlen 対応の本命カーネル
-│   ├── selective_scan.metal          # 最小版 (seqlen ≤ 1024)
-│   ├── pair_scan.metal               # (a, b) ペア用 block scan
-│   ├── block_scan.metal              # 汎用 block-level prefix sum
+├── kernels/                          # MSL kernel bodies (.metal, first-class artefacts)
+│   ├── selective_scan_chunked.metal  # main kernel (D / z / softplus / fp16)
+│   ├── selective_scan.metal          # single-chunk minimal version
+│   ├── pair_scan.metal               # block-level (a, b) pair scan
+│   ├── block_scan.metal              # block-level prefix sum
 │   ├── simd_scan_{builtin,handrolled}.metal
-│   ├── conv1d_{global,tg}.metal      # tg memory 実験用
-│   └── copy_{scalar,vec4}.metal      # bandwidth 計測用
-├── _loader.py                        # .metal を読んで mx.fast.metal_kernel に渡す
-└── selective_scan.py                 # 高水準 Python エントリポイント
+│   ├── conv1d_{global,tg}.metal      # threadgroup-memory exploration
+│   ├── copy_{scalar,vec4}.metal      # bandwidth probes
+│   └── vector_add.metal              # toolchain smoke test
+├── _loader.py                        # reads .metal files, wraps with mx.fast.metal_kernel
+├── selective_scan.py                 # high-level Python API
+└── __init__.py
 
-experiments/                          # 各段の検証スクリプト
+experiments/                          # step-by-step verification scripts
 ├── 01-hello-metal/                   # toolchain smoke test
-├── 02-bandwidth/                     # Unified Memory 帯域 (~290 GB/s)
-├── 03-threadgroup/                   # tg memory タイル化（cache が吸収する観察）
-├── 04-simd-scan/                     # SIMD-group / block-level scan
-├── 05-pair-scan/                     # 漸化式を pair scan で解く
-├── 06-selective-scan/                # selective scan 最小版
-└── 07-chunked/                       # 任意 seqlen
+├── 02-bandwidth/                     # Unified Memory bandwidth (~290 GB/s)
+├── 03-threadgroup/                   # tg memory — finding: hw caches absorb data reuse
+├── 04-simd-scan/                     # SIMD-group + block-level scan
+├── 05-pair-scan/                     # pair-composition scan solves h_i = a_i h_{i-1} + b_i
+├── 06-selective-scan/                # minimal selective scan (seqlen ≤ 1024)
+├── 07-chunked/                       # arbitrary seqlen with running prefix
+├── 08-benchmark/                     # throughput sweep
+├── 09-features/                      # D / z / softplus combinations vs numpy reference
+└── 10-fp16/                          # mixed precision (fp16 data, fp32 weights)
 ```
 
-`mx.fast.metal_kernel` はカーネル**本体**（`{}` 内）だけを受け取る API なので、`.metal` ファイルは関数シグネチャを書かないスニペット形式。冒頭にコメントで期待される signature を記載してある。
+`mx.fast.metal_kernel` expects only the kernel **body**, so each `.metal` file is a snippet (no `kernel void <name>(...)` declaration); the expected signature is documented in a header comment.
 
-## ロードマップ
+## Roadmap
 
-| 段 | 内容 | 状態 |
+| Step | What | Status |
 |---|---|---|
-| 1A | 純 MSL で vector add | ✓ |
-| 1B | Unified Memory 帯域測定 (~290 GB/s) | ✓ |
-| 1C | threadgroup memory 検証（cache が吸収する観察） | ✓ |
-| 1D | SIMD-group + block-level prefix scan | ✓ |
-| 2 | `(a, b)` ペア合成で $h_i = a_i h_{i-1} + b_i$ を解く | ✓ |
-| 3 | selective scan 最小版（seqlen ≤ 1024） | ✓ |
-| 5 | チャンク跨ぎ (smem_running_prefix 相当) で任意 seqlen | ✓ |
-| 4 | `.metal` ファイル分離 + パッケージ化 | ✓ |
-| 6 | z ゲート / D 接続 / delta_softplus / 半精度 | TODO |
-| 7 | ベンチマーク（線形スケーリング検証） | TODO |
+| 1A | Hello-Metal vector add (toolchain) | ✓ |
+| 1B | Unified Memory bandwidth | ✓ |
+| 1C | Threadgroup memory — cache observation | ✓ |
+| 1D | SIMD-group / block-level scan | ✓ |
+| 2 | `(a, b)` pair scan solves recurrence | ✓ |
+| 3 | Selective scan, minimal (seqlen ≤ 1024) | ✓ |
+| 4 | Package as `mamba_metal`, `.metal` files | ✓ |
+| 5 | Chunking + per-state running prefix | ✓ |
+| 6 | D / softplus / z / fp16 | ✓ |
+| 7 | Throughput benchmark | ✓ |
+| 8 | Mamba block (in_proj → conv1d → SSM → out_proj) | TODO |
+| 9 | HuggingFace checkpoint inference | TODO |
 
-各段の知見は [createcentury.github.io/blog](https://createcentury.github.io/blog) に記事化していく。
+Findings from each step are written up at [createcentury.github.io/blog](https://createcentury.github.io/blog).
 
-## 参考文献
+## Development
 
-- Albert Gu, Tri Dao. "[Mamba: Linear-Time Sequence Modeling with Selective State Spaces](https://arxiv.org/abs/2312.00752)" arXiv:2312.00752, 2023.
-- Guy E. Blelloch. "[Prefix Sums and Their Applications](https://www.cs.cmu.edu/~guyb/papers/Ble93.pdf)" Technical Report CMU-CS-90-190, 1993.
-- Eric Martin, Chris Cundy. "[Parallelizing Linear Recurrent Neural Nets Over Sequence Length](https://arxiv.org/abs/1709.04057)" arXiv:1709.04057, 2017.
+- Apple M4 Max / Metal 3
+- Python 3.12 (uv-managed)
+- MLX as the kernel host (handles JIT compilation, buffer binding, dispatch)
+
+## References
+
+- Albert Gu, Tri Dao. [Mamba: Linear-Time Sequence Modeling with Selective State Spaces](https://arxiv.org/abs/2312.00752), arXiv:2312.00752, 2023.
+- Guy E. Blelloch. [Prefix Sums and Their Applications](https://www.cs.cmu.edu/~guyb/papers/Ble93.pdf), CMU-CS-90-190, 1993.
+- Eric Martin, Chris Cundy. [Parallelizing Linear Recurrent Neural Nets Over Sequence Length](https://arxiv.org/abs/1709.04057), arXiv:1709.04057, 2017.
+- Jimmy T.H. Smith et al. [Simplified State Space Layers for Sequence Modeling](https://arxiv.org/abs/2208.04933), arXiv:2208.04933, 2022.
 
 ## License
 
