@@ -1,20 +1,24 @@
 // selective_scan_chunked — Mamba selective scan for arbitrary seqlen.
 //
-// Same as selective_scan.metal, but the seqlen is chunked into pieces of
+// Same as selective_scan.metal, but seqlen is chunked into pieces of
 // CHUNK_SIZE (1024) and the per-state running prefix (a, b) is carried
-// in threadgroup memory across chunks.
+// in threadgroup memory across chunks. Mirrors Mamba CUDA's smem_running_prefix.
 //
-// This mirrors Mamba CUDA's smem_running_prefix mechanism.
-//
-// Constraints: dstate <= 64 (MAX_DSTATE), fp32, no z gate / D / softplus.
+// Optional features (toggled by runtime flags):
+//   apply_softplus = 1 : delta = softplus(delta) before use
+//   use_D          = 1 : add D[dim] * u_t skip connection to y
+//   use_z          = 1 : multiply y by SiLU(z) = z * sigmoid(z)
 //
 // Inputs:
-//   device const float* u, delta    (batch, dim, seqlen)
-//   device const float* A           (dim, dstate)
-//   device const float* B, C        (batch, dstate, seqlen)
+//   device const float* u, delta              (batch, dim, seqlen)
+//   device const float* A                     (dim, dstate)
+//   device const float* B, C                  (batch, dstate, seqlen)
+//   device const float* D                     (dim,)               [zeros if unused]
+//   device const float* z                     (batch, dim, seqlen) [zeros if unused]
 //   device const uint&  batch, dim, dstate, seqlen
+//   device const uint&  apply_softplus, use_D, use_z
 // Output:
-//   device float* y                 (batch, dim, seqlen)
+//   device float* y                           (batch, dim, seqlen)
 // Dispatch: grid = (1024, batch, dim), threadgroup = (1024, 1, 1)
 
 uint t = thread_position_in_threadgroup.x;
@@ -26,10 +30,9 @@ uint n_sg = simdgroups_per_threadgroup;
 
 threadgroup float warp_a[32];
 threadgroup float warp_b[32];
-threadgroup float carry_a[64];  // MAX_DSTATE
+threadgroup float carry_a[64];
 threadgroup float carry_b[64];
 
-// Initialise per-state carries to identity (1, 0)
 if (t < dstate) {
     carry_a[t] = 1.0;
     carry_b[t] = 0.0;
@@ -39,15 +42,26 @@ threadgroup_barrier(mem_flags::mem_threadgroup);
 uint chunk_size = 1024u;
 uint n_chunks = (seqlen + chunk_size - 1u) / chunk_size;
 
+float D_val = (use_D != 0u) ? D[dim_id] : 0.0;
+
 for (uint c = 0; c < n_chunks; ++c) {
     uint global_t = c * chunk_size + t;
     bool in_range = global_t < seqlen;
 
     uint udx = batch_id * dim * seqlen + dim_id * seqlen + global_t;
     float u_t = in_range ? u[udx] : 0.0;
-    float delta_t = in_range ? delta[udx] : 0.0;
+    float delta_t_raw = in_range ? delta[udx] : 0.0;
 
-    float y_t = 0.0;
+    // Optional softplus on delta (Mamba uses the >20 cutoff to avoid overflow)
+    float delta_t;
+    if (apply_softplus != 0u) {
+        delta_t = (delta_t_raw <= 20.0) ? log(1.0 + exp(delta_t_raw)) : delta_t_raw;
+    } else {
+        delta_t = delta_t_raw;
+    }
+
+    // y_t initialised with D skip connection
+    float y_t = in_range ? (D_val * u_t) : 0.0;
 
     for (uint s = 0; s < dstate; ++s) {
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -100,18 +114,16 @@ for (uint c = 0; c < n_chunks; ++c) {
             a = a * ca_intra;
         }
 
-        // Combine with the inter-chunk carry from previous chunks
+        // Inter-chunk carry
         float ca = carry_a[s];
         float cb = carry_b[s];
         b = a * cb + b;
-        // a * ca is the per-thread cumulative a, not needed past this point;
-        // the only a we need going forward is the block-total for the carry.
 
         if (in_range) {
             y_t += b * C_st;
         }
 
-        // Update carry: new_carry = block_total ∘ old_carry
+        // Update inter-chunk carry to block_total ∘ old_carry
         threadgroup_barrier(mem_flags::mem_threadgroup);
         if (t == 0u) {
             float block_a = warp_a[n_sg - 1u];
@@ -119,6 +131,12 @@ for (uint c = 0; c < n_chunks; ++c) {
             carry_a[s] = block_a * ca;
             carry_b[s] = block_a * cb + block_b;
         }
+    }
+
+    // Optional z gating: y *= SiLU(z) = z * sigmoid(z)
+    if (use_z != 0u && in_range) {
+        float z_val = z[udx];
+        y_t = y_t * (z_val / (1.0 + exp(-z_val)));
     }
 
     if (in_range) {
