@@ -24,15 +24,26 @@
   the capital of the Japanese state of Japan.
 ```
 
-35〜42 tokens/sec（毎ステップで全長の forward を走らせる O(L²) の素朴版。SSM 状態キャッシュ化で O(L) 化は今後の課題）。
+### 状態キャッシュによる O(1)/token
+
+`generate_fast` は SSM 隠れ状態と conv1d の sliding window を呼び出し間で持ち越すため、新 1 トークンあたりのコストは O(1)（プロンプト長・生成長に依らず一定）。greedy 出力は O(L²) 版と完全一致。
+
+| 生成トークン数 | O(L²) 再 forward | **O(L) `generate_fast`** | speedup |
+|---:|---:|---:|---:|
+| 10  | 0.24 s | **0.06 s** | 4.3× |
+| 40  | 1.14 s | **0.18 s** | 6.3× |
+| 100 | 3.24 s | **0.51 s** | 6.3× |
+| 200 | 8.30 s | **1.38 s** | 6.0× |
+
+`generate_fast` は M4 Max で 130m モデルにおいて **~7 ms/token (≈ 145 tok/s) で一定**。生成が長くなるほど O(L²) 版との差が広がる。
 
 ```python
 from transformers import AutoTokenizer
-from mamba_metal import load_mamba_hf, generate
+from mamba_metal import load_mamba_hf, generate_fast
 
 model, _ = load_mamba_hf("state-spaces/mamba-130m-hf")
 tokenizer = AutoTokenizer.from_pretrained("state-spaces/mamba-130m-hf")
-print(generate(model, tokenizer, "The capital of Japan is", max_new_tokens=40))
+print(generate_fast(model, tokenizer, "The capital of Japan is", max_new_tokens=40))
 ```
 
 ## 進捗
